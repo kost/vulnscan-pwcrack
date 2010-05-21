@@ -6,3 +6,6 @@ Find the password for your favourite vulnerability scanner:
 - Nessus
 - NeXpose 
 
+Regarding NSE scripts:
+Latest Nmap version detects Nessus XMLRPC interface as:
+8834/tcp open  ssl/jdwp
