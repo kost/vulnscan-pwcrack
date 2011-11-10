@@ -78,7 +78,6 @@ Driver =
 		end
 
 		-- Create a buffer and receive the first line
-		-- status, response = self.socket:receive()
 		status, line = self.socket:receive_buf("\r?\n", false)
 
 		if (line == nil or string.match(line,"Bad login")) then
@@ -88,12 +87,10 @@ Driver =
 				
 			stdnse.print_debug(1, "openvas-otp-brute: Good login: %s/%s", username, password)
 			return true, brute.Account:new(username, password, creds.State.VALID)
-		else
-			stdnse.print_debug(1, "openvas-otp-brute: WARNING: Unhandled response: %s", line)
-			return false, brute.Error:new( "unhandled response" )
 		end
 
-		return false, brute.Error:new( "incorrect response from server" )
+		stdnse.print_debug(1, "openvas-otp-brute: WARNING: Unhandled response: %s", line)
+		return false, brute.Error:new( "unhandled response" )
 	end,
 
 	disconnect = function( self )

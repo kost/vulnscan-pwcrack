@@ -72,10 +72,8 @@ Driver =
 		elseif (string.match(body,'<LoginResponse.*success="1"')) then
 			stdnse.print_debug(1, "nexpose-brute: Good login: %s/%s", username, password)
 			return true, brute.Account:new(username, password, creds.State.VALID)
-		else
-			stdnse.print_debug(1, "nexpose-brute: WARNING: Unhandled response: %s", body)
 		end
-
+		stdnse.print_debug(1, "nexpose-brute: WARNING: Unhandled response: %s", body)
 		return false, brute.Error:new( "incorrect response from server" )
 	end,
 

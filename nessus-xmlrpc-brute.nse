@@ -70,11 +70,9 @@ Driver =
 		elseif (string.match(body,"<status>OK</status>")) then
 			stdnse.print_debug(1, "nessus-xmlrpc-brute: Good login: %s/%s", username, password)
 			return true, brute.Account:new(username, password, creds.State.VALID)
-		else
-			stdnse.print_debug(1, "nessus-xmlrpc-brute: WARNING: Unhandled response: %s", body)
-			return false, brute.Error:new( "Bad login" )
 		end
 
+		stdnse.print_debug(1, "nessus-xmlrpc-brute: WARNING: Unhandled response: %s", body)
 		return false, brute.Error:new( "incorrect response from server" )
 	end,
 
