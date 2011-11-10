@@ -1,5 +1,6 @@
 Password crackers for popular vulnerability scanners.
 Copyright (C) Vlatko Kosturjak, Kost. Distributed under GPL.
+NSE scripts are released under Nmap Public License.
 
 Find the password for your favourite vulnerability scanner:
 - OpenVAS
