@@ -1,156 +1,117 @@
-description = [[
-Tries to get OpenVAS login credentials by guessing usernames and passwords.
-(using OTP protocol).
-
-This uses the standard unpwdb username/password list.
+description=[[
+Performs brute force password auditing against a OpenVAS vulnerability scanner daemon using the OTP 1.0 protocol.
 ]]
 
 ---
 -- @output
--- PORT     STATE SERVICE     VERSION
--- 9390/tcp open  ssl/openvas OpenVAS server
--- | openvas-otp-brute:  
--- |_  openvas: openvas
-
+-- PORT     STATE SERVICE    REASON  VERSION
+-- 9391/tcp open  ssl/openvas syn-ack 
+-- | openvas-otp-brute: 
+-- |   Accounts
+-- |     openvas:openvas - Valid credentials
+-- |   Statistics
+-- |_    Performed 4 guesses in 4 seconds, average tps: 1
+--
+-- @args openvas-otp-brute.threads sets the number of threads. Default: 4
 
 author = "Vlatko Kosturjak"
 
 license = "Same as Nmap--See http://nmap.org/book/man-legal.html"
 
-categories = {"auth", "intrusive"}
+categories = {"intrusive", "brute"}
 
 require "shortport"
-require "stdnse"
-require "unpwdb"
+require "brute"
 require "comm"
+require "stdnse"
 
-portrule = shortport.port_or_service({9390,9391}, "openvas")
+portrule = shortport.port_or_service({9390,9391}, "openvas", "tcp")
 
-local function login(host, port, user, pass)
-	local status, err
-	local res = ""
+local DEFAULT_THREAD_NUM = 4
 
-	local socket, response = comm.tryssl(host, port, "< OTP/1.0 >\n");
-	if not socket then
-		return false, "openvas-otp-brute: Unable to open SSL connection or bad handshake"
-	end
+Driver = 
+{
+	new = function (self, host, port)
+		local o = { host = host, port = port }
+		setmetatable (o,self)
+		self.__index = self
+		return o
+	end,
 
-	if (string.match(response,"< OTP/1.0 >")) then
-		stdnse.print_debug(3, "openvas-otp-brute: Good handshake: %s", response)
-	else	
-		stdnse.print_debug(1, "openvas-otp-brute: WARNING: Bad handshake: %s", response)
-	end
-
-	local status, err = socket:send(user.."\n")
-	if (not(status)) then
-		socket:close()
-		return false, "openvas-otp-brute: Couldn't send user: " .. err
-	end
-
-	status, err = socket:send(pass.."\n")
-	if (not(status)) then
-		socket:close()
-		return false, "openvas-otp-brute: Couldn't send password: " .. err
-	end
-
-	-- Create a buffer and receive the first line
-	local buffer = stdnse.make_buffer(socket, "\r?\n")
-	local line = buffer()
-
-	if (string.match(line,"Bad login")) then
-		stdnse.print_debug(2, "openvas-otp-brute: Bad login: %s/%s", user, pass)
-		return true, false
-	elseif (string.match(line,"SERVER <|>")) then
-		stdnse.print_debug(1, "openvas-otp-brute: Good login: %s/%s", user, pass)
-		return true, true
-	else
-		stdnse.print_debug(1, "openvas-otp-brute: WARNING: Unhandled response: %s", line)
-	end
-
-	socket:close()
-	return false, "openvas-otp-brute: Login didn't return a proper response"
-end
-
-local function go(host, port)
-	local status, err
-	local result
-	local authcombinations = { 
-		{user="omp", password="omp"},
-		{user="openvas", password="openvas"},
-		{user="otp", password="otp"}
-	}
-
-	-- Load accounts from unpwdb
-	local usernames, username, passwords, password
-
-	-- Load the usernames
-	status, usernames = unpwdb.usernames()
-	if(not(status)) then
-		return false, "openvas-otp-brute: Couldn't load username list: " .. usernames
-	end
-
-	-- Load the passwords
-	status, passwords = unpwdb.passwords()
-	if(not(status)) then
-		return false, "openvas-otp-brute: Couldn't load password list: " .. passwords
-	end
-
-	-- Add the passwords to the authcombinations table
-	password = passwords()
-	while (password) do
-		username = usernames()
-		while(username) do
-			table.insert(authcombinations, {user=username, password=password})
-			username = usernames()
+	connect = function ( self )
+		self.socket = nmap.new_socket() 
+		if ( not(self.socket:connect(self.host, self.port, "ssl")) ) then
+			return false
 		end
-		usernames('reset')
-		password = passwords()
-	end
+		return true	
+	end,
 
-	stdnse.print_debug(1, "openvas-otp-brute: Loaded %d username/password pairs", #authcombinations)
+	login = function( self, username, password )
+		local status, err = self.socket:send("< OTP/1.0 >\n")
 
-	local results = {}
-	for _, combination in ipairs(authcombinations) do
-
-
-		-- Attempt a login
-		status, result = login(host, port, combination.user, combination.password)
-
-		-- Check for an error
-		if(not(status)) then
-			return false, result
+		if ( not ( status ) ) then
+			local err = brute.Error:new( "Unable to send handshake" )
+			err:setAbort(true)
+			return false, err
 		end
 
-		-- Check for a success
-		if(status and result) then
-			table.insert(results, combination)
+		local response 
+		status, response = self.socket:receive_buf("\r?\n", false)
+		if ( not(status) or response ~= "< OTP/1.0 >" ) then
+			local err = brute.Error:new( "Bad handshake from server: "..response )
+			err:setAbort(true)
+			return false, err
 		end
-	end
 
+		status, err = self.socket:send(username.."\n")
+		if ( not(status) ) then
+			local err = brute.Error:new( "Couldn't send user: "..username )
+			err:setAbort( true )
+			return false, err
+		end
 
-	return true, results
-end
+		status, err = self.socket:send(password.."\n")
+		if ( not(status) ) then
+			local err = brute.Error:new( "Couldn't send password: "..password )
+			err:setAbort( true )
+			return false, err
+		end
+
+		-- Create a buffer and receive the first line
+		-- status, response = self.socket:receive()
+		status, line = self.socket:receive_buf("\r?\n", false)
+
+		if (line == nil or string.match(line,"Bad login")) then
+			stdnse.print_debug(2, "openvas-otp-brute: Bad login: %s/%s", username, password)
+			return false, brute.Error:new( "Bad login" )
+		elseif (string.match(line,"SERVER <|>")) then
+				
+			stdnse.print_debug(1, "openvas-otp-brute: Good login: %s/%s", username, password)
+			return true, brute.Account:new(username, password, creds.State.VALID)
+		else
+			stdnse.print_debug(1, "openvas-otp-brute: WARNING: Unhandled response: %s", line)
+			return false, brute.Error:new( "unhandled response" )
+		end
+
+		return false, brute.Error:new( "incorrect response from server" )
+	end,
+
+	disconnect = function( self )
+		self.socket:close()
+	end,
+}
 
 action = function(host, port)
+	local thread_num = stdnse.get_script_args("openvas-otp-brute.threads") or DEFAULT_THREAD_NUM
 	if not pcall(require,'openssl') then
 		stdnse.print_debug( 3, "Skipping %s script because OpenSSL is missing.", filename )
 		return
 	end
-	local response = {}
-	local status, results = go(host, port)
 
-	if(not(status)) then
-		return stdnse.format_output(false, results)
-	end
-
-	if(#results == 0) then
-		return stdnse.format_output(false, "No accounts found")
-	end
-
-	for i, v in ipairs(results) do
-		table.insert(response, string.format("%s: %s\n", v.user, v.password))
-	end
-
-	return stdnse.format_output(true, response)
+	local engine = brute.Engine:new(Driver, host, port)
+	engine:setMaxThreads(thread_num)
+	engine.options.script_name = SCRIPT_NAME
+	status, result = engine:start()
+	return result
 end
 

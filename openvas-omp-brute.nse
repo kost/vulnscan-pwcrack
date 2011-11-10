@@ -1,135 +1,92 @@
-description = [[
-Tries to get OpenVAS login credentials by guessing usernames and passwords.
-(using OMP protocol).
-
-This uses the standard unpwdb username/password list.
+description=[[
+Performs brute force password auditing against a OpenVAS vulnerability scanner daemon using the OMP protocol.
 ]]
 
 ---
 -- @output
--- PORT     STATE SERVICE     REASON  VERSION
--- 9391/tcp open  ssl/openvas syn-ack OpenVAS server
--- | openvas-omp-brute:  
--- |_  openvas: openvas
+-- PORT     STATE SERVICE    REASON  VERSION
+-- 9390/tcp open  ssl/openvas syn-ack 
+-- | openvas-omp-brute: 
+-- |   Accounts
+-- |     openvas:openvas - Valid credentials
+-- |   Statistics
+-- |_    Performed 4 guesses in 4 seconds, average tps: 1
+--
+-- @args openvas-omp-brute.threads sets the number of threads. Default: 4
 
 author = "Vlatko Kosturjak"
 
 license = "Same as Nmap--See http://nmap.org/book/man-legal.html"
 
-categories = {"auth", "intrusive"}
+categories = {"intrusive", "brute"}
 
 require "shortport"
-require "stdnse"
-require "unpwdb"
+require "brute"
 require "comm"
+require "stdnse"
 
-portrule = shortport.port_or_service({9390,9391} , "openvas")
+portrule = shortport.port_or_service({9390,9391}, "openvas", "tcp")
 
-local function login(host, port, user, pass)
-	local status, err
-	local res = ""
-	local xmlreq = "<authenticate><credentials><username>"..user.."</username><password>"..pass.."</password></credentials></authenticate><HELP/>\r\n"
-	local socket, response = comm.tryssl(host, port, xmlreq)
-	if not socket then
-		return false, "openvas-omp-brute: Unable to open SSL connection or bad handshake"
-	end
+local DEFAULT_THREAD_NUM = 4
 
-	if (string.match(response,"Authentication failed")) then
-		stdnse.print_debug(2, "openvas-omp-brute: Bad login: %s/%s", user, pass)
-		socket:close()
-		return true, false
-	elseif (string.match(response,"<authenticate_response.*status=\"200\"")) then
-		stdnse.print_debug(1, "openvas-omp-brute: Good login: %s/%s", user, pass)
-		socket:close()
-		return true, true
-	else	
-		stdnse.print_debug(1, "openvas-omp-brute: WARNING: Unhandled response: %s", line)
-	end
+Driver = 
+{
+	new = function (self, host, port)
+		local o = { host = host, port = port }
+		setmetatable (o,self)
+		self.__index = self
+		return o
+	end,
 
-	socket:close()
-	return false, "openvas-omp-brute: Login didn't return a proper response"
-end
-
-local function go(host, port)
-	local status, err
-	local result
-	local authcombinations = { 
-		{user="openvas", password="openvas"},
-		{user="otp", password="otp"}
-	}
-
-	-- Load accounts from unpwdb
-	local usernames, username, passwords, password
-
-	-- Load the usernames
-	status, usernames = unpwdb.usernames()
-	if(not(status)) then
-		return false, "openvas-omp-brute: Couldn't load username list: " .. usernames
-	end
-
-	-- Load the passwords
-	status, passwords = unpwdb.passwords()
-	if(not(status)) then
-		return false, "openvas-omp-brute: Couldn't load password list: " .. passwords
-	end
-
-	-- Add the passwords to the authcombinations table
-	password = passwords()
-	while (password) do
-		username = usernames()
-		while(username) do
-			table.insert(authcombinations, {user=username, password=password})
-			username = usernames()
+	connect = function ( self )
+		self.socket = nmap.new_socket() 
+		if ( not(self.socket:connect(self.host, self.port, "ssl")) ) then
+			return false
 		end
-		usernames('reset')
-		password = passwords()
-	end
+		return true	
+	end,
 
-	stdnse.print_debug(1, "openvas-omp-brute: Loaded %d username/password pairs", #authcombinations)
+	login = function( self, username, password )
+		local status, err
+		local res = ""
+		local xmlreq = "<authenticate><credentials><username>"..username.."</username><password>"..password.."</password></credentials></authenticate><HELP/>\r\n"
+		local response
 
-	local results = {}
-	for _, combination in ipairs(authcombinations) do
-
-
-		-- Attempt a login
-		status, result = login(host, port, combination.user, combination.password)
-
-		-- Check for an error
-		if(not(status)) then
-			return false, result
+		status, err = self.socket:send(xmlreq)
+		if ( not ( status ) ) then
+			local err = brute.Error:new( "Unable to send request" )
+			err:setAbort(true)
+			return false, err
 		end
 
-		-- Check for a success
-		if(status and result) then
-			table.insert(results, combination)
-		end
-	end
+		status, response = self.socket:receive_buf("\r?\n", false)	
+		if (string.match(response,"Authentication failed")) then
+			stdnse.print_debug(2, "openvas-omp-brute: Bad login: %s/%s", username, password)
+			return false, brute.Error:new( "Bad login" )
+		elseif (string.match(response,"<authenticate_response.*status=\"200\"")) then
+			stdnse.print_debug(1, "openvas-omp-brute: Good login: %s/%s", username, password)
+			return true, brute.Account:new(username, password, creds.State.VALID)
+		end	
+		stdnse.print_debug(1, "openvas-omp-brute: WARNING: Unhandled response: %s", response)
+		return false, brute.Error:new( "unhandled response" )
+	end,
 
-
-	return true, results
-end
+	disconnect = function( self )
+		self.socket:close()
+	end,
+}
 
 action = function(host, port)
+	local thread_num = stdnse.get_script_args("openvas-omp-brute.threads") or DEFAULT_THREAD_NUM
 	if not pcall(require,'openssl') then
 		stdnse.print_debug( 3, "Skipping %s script because OpenSSL is missing.", filename )
 		return
 	end
 
-	local response = {}
-	local status, results = go(host, port)
-
-	if(not(status)) then
-		return stdnse.format_output(false, results)
-	end
-
-	if(#results == 0) then
-		return stdnse.format_output(false, "No accounts found")
-	end
-
-	for i, v in ipairs(results) do
-		table.insert(response, string.format("%s: %s\n", v.user, v.password))
-	end
-
-	return stdnse.format_output(true, response)
+	local engine = brute.Engine:new(Driver, host, port)
+	engine:setMaxThreads(thread_num)
+	engine.options.script_name = SCRIPT_NAME
+	status, result = engine:start()
+	return result
 end
 

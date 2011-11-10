@@ -1,154 +1,117 @@
-description = [[
-Tries to get Nessus login credentials by guessing usernames and passwords.
-(using NTP protocol).
-
-This uses the standard unpwdb username/password list.
+description=[[
+Performs brute force password auditing against a Nessus vulnerability scanning daemon using the NTP 1.2 protocol.
 ]]
 
 ---
 -- @output
--- PORT     STATE SERVICE
--- 1241/tcp open  nessus
--- | nessus-ntp-brute:  
--- |_  nessus: nessus
+-- PORT     STATE SERVICE    REASON  VERSION
+-- 1241/tcp open  ssl/nessus syn-ack Nessus Daemon (NTP v1.2)
+-- | nessus-ntp-brute: 
+-- |   Accounts
+-- |     nessus:nessus - Valid credentials
+-- |   Statistics
+-- |_    Performed 4 guesses in 4 seconds, average tps: 1
+--
+-- @args nessus-ntp-brute.threads sets the number of threads. Default: 4
 
 author = "Vlatko Kosturjak"
 
 license = "Same as Nmap--See http://nmap.org/book/man-legal.html"
 
-categories = {"auth", "intrusive"}
+categories = {"intrusive", "brute"}
 
 require "shortport"
-require "stdnse"
-require "unpwdb"
+require "brute"
 require "comm"
+require "stdnse"
 
-portrule = shortport.port_or_service(1241, "nessus")
+portrule = shortport.port_or_service(1241, "nessus", "tcp")
 
-local function login(host, port, user, pass)
-	local status, err
-	local res = ""
+local DEFAULT_THREAD_NUM = 4
 
-	local socket, response = comm.tryssl(host, port, "< NTP/1.2 >\n");
-	if not socket then
-		return false, "nessus-ntp-brute: Unable to open SSL connection or bad handshake"
-	end
+Driver = 
+{
+	new = function (self, host, port)
+		local o = { host = host, port = port }
+		setmetatable (o,self)
+		self.__index = self
+		return o
+	end,
 
-	if (string.match(response,"< NTP/1.2 >")) then
-		stdnse.print_debug(3, "nessus-ntp-brute: Good handshake: %s", response)
-	else	
-		stdnse.print_debug(1, "nessus-ntp-brute: WARNING: Bad handshake: %s", response)
-	end
-
-	local status, err = socket:send(user.."\n")
-	if (not(status)) then
-		socket:close()
-		return false, "nessus-ntp-brute: Couldn't send user: " .. err
-	end
-
-	status, err = socket:send(pass.."\n")
-	if (not(status)) then
-		socket:close()
-		return false, "nessus-ntp-brute: Couldn't send password: " .. err
-	end
-
-	-- Create a buffer and receive the first line
-	local buffer = stdnse.make_buffer(socket, "\r?\n")
-	local line = buffer()
-
-	if (line == nil or string.match(line,"Bad login")) then
-		stdnse.print_debug(2, "nessus-ntp-brute: Bad login: %s/%s", user, pass)
-		return true, false
-	elseif (string.match(line,"SERVER <|>")) then
-		stdnse.print_debug(1, "nessus-ntp-brute: Good login: %s/%s", user, pass)
-		return true, true
-	else
-		stdnse.print_debug(1, "nessus-ntp-brute: WARNING: Unhandled response: %s", line)
-	end
-
-	socket:close()
-	return false, "nessus-ntp-brute: Login didn't return a proper response"
-end
-
-local function go(host, port)
-	local status, err
-	local result
-	local authcombinations = { 
-		{user="nessus", password="nessus"},
-		{user="ntp", password="ntp"}
-	}
-
-	-- Load accounts from unpwdb
-	local usernames, username, passwords, password
-
-	-- Load the usernames
-	status, usernames = unpwdb.usernames()
-	if(not(status)) then
-		return false, "nessus-ntp-brute: Couldn't load username list: " .. usernames
-	end
-
-	-- Load the passwords
-	status, passwords = unpwdb.passwords()
-	if(not(status)) then
-		return false, "nessus-ntp-brute: Couldn't load password list: " .. passwords
-	end
-
-	-- Add the passwords to the authcombinations table
-	password = passwords()
-	while (password) do
-		username = usernames()
-		while(username) do
-			table.insert(authcombinations, {user=username, password=password})
-			username = usernames()
+	connect = function ( self )
+		self.socket = nmap.new_socket() 
+		if ( not(self.socket:connect(self.host, self.port, "ssl")) ) then
+			return false
 		end
-		usernames('reset')
-		password = passwords()
-	end
+		return true	
+	end,
 
-	stdnse.print_debug(1, "nessus-ntp-brute: Loaded %d username/password pairs", #authcombinations)
+	login = function( self, username, password )
+		local status, err = self.socket:send("< NTP/1.2 >\n")
 
-	local results = {}
-	for _, combination in ipairs(authcombinations) do
-
-
-		-- Attempt a login
-		status, result = login(host, port, combination.user, combination.password)
-
-		-- Check for an error
-		if(not(status)) then
-			return false, result
+		if ( not ( status ) ) then
+			local err = brute.Error:new( "Unable to send handshake" )
+			err:setAbort(true)
+			return false, err
 		end
 
-		-- Check for a success
-		if(status and result) then
-			table.insert(results, combination)
+		local response 
+		status, response = self.socket:receive_buf("\r?\n", false)
+		if ( not(status) or response ~= "< NTP/1.2 >" ) then
+			local err = brute.Error:new( "Bad handshake from server: "..response )
+			err:setAbort(true)
+			return false, err
 		end
-	end
 
+		status, err = self.socket:send(username.."\n")
+		if ( not(status) ) then
+			local err = brute.Error:new( "Couldn't send user: "..username )
+			err:setAbort( true )
+			return false, err
+		end
 
-	return true, results
-end
+		status, err = self.socket:send(password.."\n")
+		if ( not(status) ) then
+			local err = brute.Error:new( "Couldn't send password: "..password )
+			err:setAbort( true )
+			return false, err
+		end
+
+		-- Create a buffer and receive the first line
+		-- status, response = self.socket:receive()
+		status, line = self.socket:receive_buf("\r?\n", false)
+
+		if (line == nil or string.match(line,"Bad login") or string.match(line,"ERROR")) then
+			stdnse.print_debug(2, "nessus-ntp-brute: Bad login: %s/%s", username, password)
+			return false, brute.Error:new( "Bad login" )
+		elseif (string.match(line,"SERVER <|>")) then
+				
+			stdnse.print_debug(1, "nessus-ntp-brute: Good login: %s/%s", username, password)
+			return true, brute.Account:new(username, password, creds.State.VALID)
+		else
+			stdnse.print_debug(1, "nessus-ntp-brute: WARNING: Unhandled response: %s", line)
+			return false, brute.Error:new( "unhandled response" )
+		end
+
+		return false, brute.Error:new( "incorrect response from server" )
+	end,
+
+	disconnect = function( self )
+		self.socket:close()
+	end,
+}
 
 action = function(host, port)
+	local thread_num = stdnse.get_script_args("nessus-ntp-brute.threads") or DEFAULT_THREAD_NUM
 	if not pcall(require,'openssl') then
 		stdnse.print_debug( 3, "Skipping %s script because OpenSSL is missing.", filename )
 		return
 	end
-	local response = {}
-	local status, results = go(host, port)
 
-	if(not(status)) then
-		return stdnse.format_output(false, results)
-	end
-
-	if(#results == 0) then
-		return stdnse.format_output(false, "No accounts found")
-	end
-
-	for i, v in ipairs(results) do
-		table.insert(response, string.format("%s: %s\n", v.user, v.password))
-	end
-
-	return stdnse.format_output(true, response)
+	local engine = brute.Engine:new(Driver, host, port)
+	engine:setMaxThreads(thread_num)
+	engine.options.script_name = SCRIPT_NAME
+	status, result = engine:start()
+	return result
 end
 

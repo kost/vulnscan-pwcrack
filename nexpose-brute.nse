@@ -1,143 +1,100 @@
-description = [[
-Tries to get NeXpose login credentials by guessing usernames and passwords.
-(using API 1.1 protocol).
-
-This uses the standard unpwdb username/password list.
+description=[[
+Performs brute force password auditing against a Nexpose vulnerability scanner using the API 1.1.
 ]]
 
 ---
 -- @output
 -- PORT     STATE SERVICE     REASON  VERSION
--- 3780/tcp open  ssl/unknown syn-ack
--- | nexpose-brute:  
--- |_  nxadmin: nxadmin
+-- 3780/tcp open  ssl/nexpose syn-ack NeXpose NSC 0.6.4
+-- | nexpose-brute: 
+-- |   Accounts
+-- |     nxadmin:nxadmin - Valid credentials
+-- |   Statistics
+-- |_    Performed 5 guesses in 1 seconds, average tps: 5
 
 author = "Vlatko Kosturjak"
 
 license = "Same as Nmap--See http://nmap.org/book/man-legal.html"
 
-categories = {"auth", "intrusive"}
+categories = {"intrusive", "brute"}
 
 require "shortport"
+require "brute"
+require "comm"
 require "stdnse"
-require "http"
-require "unpwdb"
 
-portrule = shortport.port_or_service(3780, "nexpose")
+portrule = shortport.port_or_service(3780, "nexpose", "tcp")
 
-local function login(host, port, user, pass)
-	local status, err
-	local res = ""
-	local header = { ["Content-Type"] ="text/xml" } 
-	local options = { header = header }
+local DEFAULT_THREAD_NUM = 2
 
-	local postdata='<?xml version="1.0" encoding="UTF-8"?><LoginRequest sync-id="1" user-id="'..user..'" password="'..pass..'"></LoginRequest>'
-	stdnse.print_debug(4, "nexpose-brute: Using: %s", postdata)
+Driver = 
+{
+	new = function (self, host, port)
+		local o = { host = host, port = port }
+		setmetatable (o,self)
+		self.__index = self
+		return o
+	end,
 
-	local req = http.post( host, port, '/api/1.1/xml', options, nil, postdata )
-
-	if (not(req["status"])) then
-		return false, "nexpose-brute: Couldn't send/receive HTTPS request" 
-	end
-
-	body = req["body"]
-
-	if (not body == nil) then
-		stdnse.print_debug(2, "nexpose-brute: Bad login: %s", body)
-	end
-
-	if (body == nil or string.match(body,'<LoginResponse.*success="0"')) then
-		stdnse.print_debug(2, "nexpose-brute: Bad login: %s/%s", user, pass)
-		return true, false
-	elseif (string.match(body,'<LoginResponse.*success="1"')) then
-		stdnse.print_debug(1, "nexpose-brute: Good login: %s/%s", user, pass)
-		return true, true
-	else
-		stdnse.print_debug(1, "nexpose-brute: WARNING: Unhandled response: %s", body)
-	end
-
-	return false, "nexpose-brute: Login didn't return a proper response"
-end
-
-local function go(host, port)
-	local status, err
-	local result
-	local authcombinations = { 
-		{user="nxadmin", password="nxadmin"},
-		{user="nxadmin", password="nexpose"}
-	}
-
-	-- Load accounts from unpwdb
-	local usernames, username, passwords, password
-
-	-- Load the usernames
-	status, usernames = unpwdb.usernames()
-	if(not(status)) then
-		return false, "nexpose-brute: Couldn't load username list: " .. usernames
-	end
-
-	-- Load the passwords
-	status, passwords = unpwdb.passwords()
-	if(not(status)) then
-		return false, "nexpose-brute: Couldn't load password list: " .. passwords
-	end
-
-	-- Add the passwords to the authcombinations table
-	password = passwords()
-	while (password) do
-		username = usernames()
-		while(username) do
-			table.insert(authcombinations, {user=username, password=password})
-			username = usernames()
+	connect = function ( self )
+		self.socket = nmap.new_socket() 
+		if ( not(self.socket:connect(self.host, self.port, "ssl")) ) then
+			return false
 		end
-		usernames('reset')
-		password = passwords()
-	end
+		return true	
+	end,
 
-	stdnse.print_debug(1, "nexpose-brute: Loaded %d username/password pairs", #authcombinations)
+	login = function( self, username, password )
+		local status, err
+		local res = ""
+		local header = { ["Content-Type"] ="text/xml" } 
+		local options = { header = header }
 
-	local results = {}
-	for _, combination in ipairs(authcombinations) do
+		local postdata='<?xml version="1.0" encoding="UTF-8"?><LoginRequest sync-id="1" user-id="'..username..'" password="'..password..'"></LoginRequest>'
+		stdnse.print_debug(4, "nexpose-brute: Using: %s", postdata)
 
+		local req = http.post( self.host, self.port, '/api/1.1/xml', options, nil, postdata )
 
-		-- Attempt a login
-		status, result = login(host, port, combination.user, combination.password)
-
-		-- Check for an error
-		if(not(status)) then
-			return false, result
+		if (not(req["status"])) then
+			return false, "nexpose-brute: Couldn't send/receive HTTPS request" 
 		end
 
-		-- Check for a success
-		if(status and result) then
-			table.insert(results, combination)
+		body = req["body"]
+
+		if (not body == nil) then
+			stdnse.print_debug(2, "nexpose-brute: Bad login: %s", body)
+			return false, brute.Error:new( "Bad login" )
 		end
-	end
 
+		if (body == nil or string.match(body,'<LoginResponse.*success="0"')) then
+			stdnse.print_debug(2, "nexpose-brute: Bad login: %s/%s", username, password)
+			return false, brute.Error:new( "Bad login" )
+		elseif (string.match(body,'<LoginResponse.*success="1"')) then
+			stdnse.print_debug(1, "nexpose-brute: Good login: %s/%s", username, password)
+			return true, brute.Account:new(username, password, creds.State.VALID)
+		else
+			stdnse.print_debug(1, "nexpose-brute: WARNING: Unhandled response: %s", body)
+		end
 
-	return true, results
-end
+		return false, brute.Error:new( "incorrect response from server" )
+	end,
+
+	disconnect = function( self )
+		self.socket:close()
+	end,
+}
 
 action = function(host, port)
+	local thread_num = stdnse.get_script_args("nexpose-brute.threads") or DEFAULT_THREAD_NUM
 	if not pcall(require,'openssl') then
 		stdnse.print_debug( 3, "Skipping %s script because OpenSSL is missing.", filename )
 		return
 	end
-	local response = {}
-	local status, results = go(host, port)
 
-	if(not(status)) then
-		return stdnse.format_output(false, results)
-	end
-
-	if(#results == 0) then
-		return stdnse.format_output(false, "No accounts found")
-	end
-
-	for i, v in ipairs(results) do
-		table.insert(response, string.format("%s: %s\n", v.user, v.password))
-	end
-
-	return stdnse.format_output(true, response)
+	local engine = brute.Engine:new(Driver, host, port)
+	engine:setMaxThreads(thread_num)
+	engine.options.script_name = SCRIPT_NAME
+	status, result = engine:start()
+	return result
 end
 
