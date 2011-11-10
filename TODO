@@ -1,0 +1,9 @@
+ALL:
+	- encode XML entities
+	- support for non/SSL sockets
+
+metasploit:
+	- benchmark which number of threads is fastest
+
+
+
