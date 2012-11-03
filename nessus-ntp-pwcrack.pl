@@ -47,11 +47,12 @@ open(PASS,"<$passfile") or die ("cannot open password file $passfile: $!");
 my $userglob = <USER>;
 chomp $userglob;
 
+$SIG{INT} = \&ctrlc;
+my %comb;
+
 print STDERR "[i] Cracking.\n";
 my $starttime=time();
 
-$SIG{INT} = \&ctrlc;
-my %comb;
 while ($loop) {
 	if ($pid) {
 		# print STDERR "Main/Parent\n";
