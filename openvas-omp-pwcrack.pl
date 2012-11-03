@@ -45,13 +45,15 @@ print STDERR "OpenVAS OMP password cracker. (C) Kost. Distributed under GPL.\n\n
 open(USER,"<$userfile") or die ("cannot open user file $userfile: $!");
 open(PASS,"<$passfile") or die ("cannot open password file $passfile: $!");
 
-print STDERR "[i] Cracking.\n";
-
 my $userglob = <USER>;
 chomp $userglob;
 
 $SIG{INT} = \&ctrlc;
 my %comb;
+
+print STDERR "[i] Cracking.\n";
+my $starttime=time();
+
 while ($loop) {
 	if ($pid) {
 		# print STDERR "Main/Parent\n";
@@ -113,8 +115,11 @@ foreach (@childs) {
 	waitpid($_, 0)
 }
 
+my $endtime = time();
+my $difftime = $endtime - $starttime;
+
 print STDERR "\n";
-print STDERR "[i] Statistics: $total tries\n";
+print STDERR "[i] Statistics: $total tries in $difftime seconds.\n";
 print STDERR "[i] END\n";
 
 sub getcomb {
