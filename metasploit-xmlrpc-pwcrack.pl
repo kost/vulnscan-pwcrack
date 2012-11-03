@@ -25,7 +25,6 @@ my $pid = 1;
 my $loop = 1;
 my $skipsslcheck = 0;
 
-my $starttime=time();
 
 Getopt::Long::Configure ("bundling");
 
@@ -55,8 +54,6 @@ print STDERR "Metasploit XMLRPC password cracker. (C) Kost. Distributed under GP
 open(USER,"<$userfile") or die ("cannot open user file $userfile: $!");
 open(PASS,"<$passfile") or die ("cannot open password file $passfile: $!");
 
-print STDERR "[i] Cracking.\n";
-
 my $userglob = <USER>;
 chomp $userglob;
 
@@ -80,6 +77,10 @@ if ($rpc eq "msgpack") {
 
 $SIG{INT} = \&ctrlc;
 my %comb;
+
+print STDERR "[i] Cracking.\n";
+my $starttime=time();
+
 while ($loop) {
 	if ($pid) {
 		# print STDERR "Main/Parent\n";
