@@ -10,6 +10,10 @@ and exploitation frameworks:
 - Metasploit XMLRPC
 
 Regarding NSE scripts:
+- All the scripts are now part of nmap (therefore I suggest to use
+  versions found in nmap), so removed from head
+  (you can still get them through git history if you need them for
+   any strange reason)
 - You have to run version checking (-sV)
 - You have to force Nmap to use SSL for XMLRPC guessing in
 Nessus 
